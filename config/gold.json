@@ -1,0 +1,12 @@
+{
+  "symbol": "XAUUSD",
+  "execution_timeframe": "M15",
+  "bias_timeframe": "H1",
+  "risk_percent": 0.5,
+  "reward_multiple": 2.0,
+  "session_start_hour": 9.0,
+  "session_end_hour": 22.0,
+  "friday_cutoff_hour": 21.0,
+  "magic": 161211,
+  "comment": "smc-gold"
+}

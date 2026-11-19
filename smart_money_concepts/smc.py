@@ -1,4 +1,3 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -78,25 +77,26 @@ class OrderBlock:
         self.bias = bias
 
 class SmartMoneyConcepts:
-    def __init__(self, stock_code: str, period: str = "1y", interval: str = "1d"):
-        """Smart Money Concepts Indicator - Python Implementation using yfinance data.
+    def __init__(self, symbol: str = "XAUUSD", timeframe: str = "M15", count: int = 1500,
+                 df: Optional[pd.DataFrame] = None, terminal_path: Optional[str] = None):
+        """Smart Money Concepts analysis for MetaTrader 5 instruments.
 
-        Args:
-            stock_code (str): Stock ticker symbol (e.g., 'RELIANCE.NS' for NSE).
-            period (str): Period for yfinance data (e.g., '1y' for 1 year).
-            interval (str): Interval for yfinance data (e.g., '1d' for daily).
+        The upstream project loaded equities through yfinance. This fork loads
+        OHLC bars from a local MetaTrader 5 terminal and defaults to spot gold.
         """
-        self.stock_code = stock_code
-        self.period = period
-        self.interval = interval
-
-        # Initialize data containers
+        self.symbol = symbol
+        self.stock_code = symbol
+        self.timeframe = timeframe.upper()
+        self.count = int(count)
+        self.terminal_path = terminal_path
         self.df = None
         self.ohlcv_data = None
-
-        # Initialize the indicator
+        self.record_snapshots = True
+        self.snapshots = []
         self.setup_constants()
         self.setup_variables()
+        if df is not None:
+            self.load_dataframe(df)
 
     def setup_constants(self):
         # Same as original
@@ -137,6 +137,9 @@ class SmartMoneyConcepts:
         self.swing_bear_color_input = self.RED
         self.show_swings_input = False
         self.swings_length_input = 50
+        self.internal_length_input = 5
+        self.fvg_body_percent = 0.00025
+        self.fvg_min_atr = 0.05
         self.show_high_low_swings_input = True
         self.show_internal_order_blocks_input = True
         self.internal_order_blocks_size_input = 5
@@ -194,45 +197,60 @@ class SmartMoneyConcepts:
         self.premium_zone_color = self.MONO_BEARISH if self.style_input == self.MONOCHROME else self.premium_zone_color_input
         self.discount_zone_color = self.MONO_BULLISH if self.style_input == self.MONOCHROME else self.discount_zone_color_input
 
-    async def fetch_ohlcv(self):
-        """Fetch OHLCV data using yfinance."""
+    def load_dataframe(self, df: pd.DataFrame) -> bool:
+        """Load an OHLC frame. Index or a time column may be timezone-naive broker time."""
+        data = df.copy()
+        rename = {}
+        for src, dst in (
+            ("Open", "open"), ("High", "high"), ("Low", "low"), ("Close", "close"),
+            ("Spread", "spread"), ("Volume", "volume"),
+        ):
+            if src in data.columns and dst not in data.columns:
+                rename[src] = dst
+        data = data.rename(columns=rename)
+        required = ["open", "high", "low", "close"]
+        missing = [col for col in required if col not in data.columns]
+        if missing:
+            raise ValueError(f"OHLC columns required, missing {missing}")
+        if "time" in data.columns:
+            data["time"] = pd.to_datetime(data["time"])
+            data = data.set_index("time")
+        if not isinstance(data.index, pd.DatetimeIndex):
+            data.index = pd.to_datetime(data.index)
+        data = data.sort_index()
+        data = data[~data.index.duplicated(keep="last")]
+        data = data.dropna(subset=required)
+        if data.empty:
+            raise ValueError("No OHLC rows left after cleaning")
+        if "spread" not in data.columns:
+            data["spread"] = 0.0
+        self.df = data
+        self.ohlcv_data = data[required].copy()
+        return True
+
+    def fetch_ohlcv(self, count: Optional[int] = None, timeframe: Optional[str] = None) -> bool:
+        """Fetch closed bars from the local MetaTrader 5 terminal."""
+        from .mt5_data import MT5DataFeed
+
+        count = self.count if count is None else int(count)
+        timeframe = self.timeframe if timeframe is None else timeframe.upper()
+        feed = MT5DataFeed(self.terminal_path)
         try:
-            print(f"Fetching data for {self.stock_code} using yfinance...")
-            # Download data using yfinance
-            ticker = yf.Ticker(self.stock_code)
-            self.df = ticker.history(period=self.period, interval=self.interval)
-
-            # Ensure required columns exist
-            required_columns = ['Open', 'High', 'Low', 'Close']
-            if not all(col in self.df.columns for col in required_columns):
-                print(f"Data for {self.stock_code} missing required columns: {required_columns}")
-                return False
-
-            # Map yfinance columns to match the expected format
-            column_mapping = {
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close'
-            }
-            self.df = self.df.rename(columns=column_mapping)
-
-            # Ensure timestamp is in datetime format and set as index
-            self.df.index = pd.to_datetime(self.df.index)
-            self.df = self.df.sort_index()  # Sort by date (oldest to newest)
-
-            # Drop rows with missing data
-            self.df = self.df.dropna(subset=['open', 'high', 'low', 'close'])
-
-            # Store OHLCV data
-            self.ohlcv_data = self.df[['open', 'high', 'low', 'close']].copy()
-            print(f"Successfully fetched {len(self.df)} bars")
-            print(f"Data range: {self.df.index[0].date()} to {self.df.index[-1].date()}")
-            return True
-
-        except Exception as e:
-            print(f"Error fetching data for {self.stock_code}: {e}")
+            frame = feed.copy_rates(self.symbol, timeframe, count, closed_only=True)
+        except Exception as exc:
+            print(f"Error fetching {self.symbol} from MetaTrader 5: {exc}")
             return False
+        if frame is None or frame.empty:
+            print(f"No MetaTrader 5 bars for {self.symbol} {timeframe}")
+            return False
+        self.timeframe = timeframe
+        self.load_dataframe(frame)
+        print(f"Loaded {len(self.df)} {self.symbol} {timeframe} bars from MetaTrader 5")
+        print(f"Range: {self.df.index[0]} -> {self.df.index[-1]}")
+        return True
+
+    async def fetch_ohlcv_async(self, count: Optional[int] = None, timeframe: Optional[str] = None) -> bool:
+        return self.fetch_ohlcv(count=count, timeframe=timeframe)
 
     def prepare_data(self):
         # Same as original
@@ -604,10 +622,75 @@ class SmartMoneyConcepts:
             }
         }
 
-    def run_smc_analysis(self):
-        print("Running Smart Money Concepts analysis...")
+    def reset_analysis_state(self):
+        """Clear mutable SMC state so a second run does not reuse old pivots."""
+        self.swing_high = Pivot()
+        self.swing_low = Pivot()
+        self.internal_high = Pivot()
+        self.internal_low = Pivot()
+        self.equal_high = Pivot()
+        self.equal_low = Pivot()
+        self.swing_trend = Trend(0)
+        self.internal_trend = Trend(0)
+        self.equal_high_display = EqualDisplay()
+        self.equal_low_display = EqualDisplay()
+        self.fair_value_gaps = []
+        self.swing_order_blocks = []
+        self.internal_order_blocks = []
+        self.trailing = TrailingExtremes()
+        self.current_alerts = Alerts()
         self.structure_breaks = []
         self.equal_structures = []
+        self.snapshots = []
+        self.premium_discount_zones = {}
+        self._leg_vars = {}
+
+    def _fmt_level(self, value) -> str:
+        return "n/a" if value is None else f"{float(value):.2f}"
+
+    def _snapshot(self, index: int) -> dict:
+        row = self.df.iloc[index]
+        zones = getattr(self, "premium_discount_zones", {}) or {}
+        breaks = [item for item in self.structure_breaks if item.get("break_bar_index") == index]
+        return {
+            "index": index,
+            "time": self.df.index[index],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "atr": float(row["atr"]) if pd.notna(row["atr"]) else 0.0,
+            "spread": float(row["spread"]) if "spread" in self.df.columns and pd.notna(row["spread"]) else 0.0,
+            "swing_bias": int(self.swing_trend.bias),
+            "internal_bias": int(self.internal_trend.bias),
+            "breaks": breaks,
+            "swing_order_blocks": [
+                {"high": float(ob.bar_high), "low": float(ob.bar_low), "bias": int(ob.bias)}
+                for ob in self.swing_order_blocks[:8]
+            ],
+            "internal_order_blocks": [
+                {"high": float(ob.bar_high), "low": float(ob.bar_low), "bias": int(ob.bias)}
+                for ob in self.internal_order_blocks[:8]
+            ],
+            "fair_value_gaps": [
+                {"top": float(gap.top), "bottom": float(gap.bottom), "bias": int(gap.bias)}
+                for gap in self.fair_value_gaps[:8]
+            ],
+            "trailing_top": None if self.trailing.top is None else float(self.trailing.top),
+            "trailing_bottom": None if self.trailing.bottom is None else float(self.trailing.bottom),
+            "premium_bottom": None if "premium" not in zones else float(zones["premium"]["bottom"]),
+            "discount_top": None if "discount" not in zones else float(zones["discount"]["top"]),
+        }
+
+    def run_smc_analysis(self, record_snapshots: Optional[bool] = None):
+        if self.df is None:
+            raise ValueError("No data available. Call fetch_ohlcv() or load_dataframe() first.")
+        if "atr" not in self.df.columns:
+            self.prepare_data()
+        if record_snapshots is not None:
+            self.record_snapshots = record_snapshots
+        print("Running Smart Money Concepts analysis...")
+        self.reset_analysis_state()
         # print("Processing bars exactly like Pine Script execution...")
         for current_bar in range(len(self.df)):
             self.current_bar_index = current_bar
@@ -629,7 +712,7 @@ class SmartMoneyConcepts:
             if self.show_fair_value_gaps_input:
                 self.delete_fair_value_gaps_bar(current_bar)
             self.get_current_structure_bar(self.swings_length_input, False, False, current_bar)
-            self.get_current_structure_bar(5, False, True, current_bar)
+            self.get_current_structure_bar(self.internal_length_input, False, True, current_bar)
             if self.show_equal_highs_lows_input:
                 self.get_current_structure_bar(self.equal_highs_lows_length_input, True, False, current_bar)
             if self.show_internals_input or self.show_internal_order_blocks_input or self.show_trend_input:
@@ -642,6 +725,8 @@ class SmartMoneyConcepts:
                 self.delete_order_blocks_bar(False, current_bar)
             if self.show_fair_value_gaps_input:
                 self.detect_fair_value_gaps_bar(current_bar)
+            if self.record_snapshots:
+                self.snapshots.append(self._snapshot(current_bar))
             if current_bar == len(self.df) - 1:
                 if self.show_internal_order_blocks_input:
                     self.draw_order_blocks_final(True)
@@ -649,10 +734,10 @@ class SmartMoneyConcepts:
                     self.draw_order_blocks_final(False)
         print("Smart Money Concepts analysis completed!")
         print("Final Results:")
-        print(f"Swing high: {self.swing_high.current_level:.2f}")
-        print(f"Swing low: {self.swing_low.current_level:.2f}")
-        print(f"Internal high: {self.internal_high.current_level:.2f}")
-        print(f"Internal low: {self.internal_low.current_level:.2f}")
+        print(f"Swing high: {self._fmt_level(self.swing_high.current_level)}")
+        print(f"Swing low: {self._fmt_level(self.swing_low.current_level)}")
+        print(f"Internal high: {self._fmt_level(self.internal_high.current_level)}")
+        print(f"Internal low: {self._fmt_level(self.internal_low.current_level)}")
         print(f"Swing trend: {self.swing_trend.bias}")
         print(f"Internal trend: {self.internal_trend.bias}")
         print(f"Structure breaks: {len(self.structure_breaks)}")
@@ -952,7 +1037,9 @@ class SmartMoneyConcepts:
         last2_high = self.highs[current_bar-2]
         last2_low = self.lows[current_bar-2]
         bar_delta_percent = (last_close - last_open) / last_open if last_open != 0 else 0
-        threshold = 0.002  # Fixed threshold of 0.2% for testing
+        atr_value = float(self.df.iloc[current_bar]["atr"]) if pd.notna(self.df.iloc[current_bar]["atr"]) else 0.0
+        min_gap = self.fvg_min_atr * atr_value
+        threshold = self.fvg_body_percent
         
         # print(f"Bar {current_bar}:")
         # print(f"  Current Low: {current_low:.2f}, Last2 High: {last2_high:.2f}, Last Close: {last_close:.2f}")
@@ -961,8 +1048,10 @@ class SmartMoneyConcepts:
         # print(f"  Bullish FVG Conditions: current_low({current_low:.2f}) > last2_high({last2_high:.2f}), last_close({last_close:.2f}) > last2_high({last2_high:.2f}), bar_delta_percent({bar_delta_percent:.4f}) > threshold({threshold:.4f})")
         # print(f"  Bearish FVG Conditions: current_high({current_high:.2f}) < last2_low({last2_low:.2f}), last_close({last_close:.2f}) < last2_low({last2_low:.2f}), -bar_delta_percent({-bar_delta_percent:.4f}) > threshold({threshold:.4f})")
         
-        bullish_fvg = (current_low > last2_high and last_close > last2_high and bar_delta_percent > threshold)
-        bearish_fvg = (current_high < last2_low and last_close < last2_low and -bar_delta_percent > threshold)
+        bullish_gap = current_low - last2_high
+        bearish_gap = last2_low - current_high
+        bullish_fvg = (bullish_gap > 0 and last_close > last2_high and bar_delta_percent > threshold and bullish_gap >= min_gap)
+        bearish_fvg = (bearish_gap > 0 and last_close < last2_low and -bar_delta_percent > threshold and bearish_gap >= min_gap)
         
         if bullish_fvg:
             # print(f"Bullish FVG detected at bar {current_bar}: Top={current_low:.2f}, Bottom={last2_high:.2f}")
@@ -981,8 +1070,8 @@ class SmartMoneyConcepts:
             # print(f"Bearish FVG detected at bar {current_bar}: Top={current_high:.2f}, Bottom={last2_low:.2f}")
             self.current_alerts.bearish_fair_value_gap = True
             fvg = FairValueGap(
-                top=current_high,
-                bottom=last2_low,
+                top=last2_low,
+                bottom=current_high,
                 bias=self.BEARISH,
                 start_time=last_time,
                 end_time=current_time + self.fair_value_gaps_extend_input,
@@ -1235,7 +1324,7 @@ class SmartMoneyConcepts:
                             color=self.swing_bullish_color, fontsize=9,
                             ha='right', va='top', weight='bold')
 
-    def visualize_smc(self, bars_to_show: int = 1000):
+    def visualize_smc(self, bars_to_show: int = 1000, show: bool = True, save_path: Optional[str] = None):
         if self.df is None:
             print("No data available for visualization")
             return
@@ -1275,7 +1364,13 @@ class SmartMoneyConcepts:
                                                 alpha=0.1, label='Premium/Discount Zones'))
         ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1))
         plt.tight_layout()
-        plt.show()
+        if save_path:
+            fig.savefig(save_path, dpi=120, bbox_inches="tight")
+            print(f"Chart saved to {save_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
         self.print_analysis_summary()
 
     # In print_analysis_summary method
@@ -1283,7 +1378,7 @@ class SmartMoneyConcepts:
         print("\n" + "="*80)
         print("\nSMART MONEY CONCEPTS ANALYSIS SUMMARY")
         print("\n" + "="*80)
-        print(f"Stock Code: {self.stock_code}")
+        print(f"Symbol: {self.symbol} {getattr(self, 'timeframe', '')}")
         print(f"Total Bars Analyzed: {len(self.df)}")
         print(f"Data Range: {self.df.index[0]} to {self.df.index[-1]}")
         print("-" * 80)

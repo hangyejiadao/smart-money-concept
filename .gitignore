@@ -30,3 +30,6 @@ dist/
 data/
 *.csv
 *.xlsx
+
+# Local MT5 reports and charts
+reports/

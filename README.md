@@ -1,162 +1,54 @@
-# 📈 Smart Money Concepts (SMC) in Python  
+# XAUUSD Smart Money Concepts for MetaTrader 5
 
-A Python package for performing **Smart Money Concepts (SMC)** technical analysis using historical stock data from **yfinance**.  
-This framework helps traders and analysts detect **market structure, order blocks, fair value gaps, BOS/CHoCH**, and visualize them with **matplotlib**. 
+本目录是 [Prasad1612/smart-money-concept](https://github.com/Prasad1612/smart-money-concept) 的本地改编，不是已推送到 GitHub 的 fork。原项目用 yfinance 分析股票；这里改成通过 Python `MetaTrader5` 包读取本机终端的外汇黄金行情，并给出可回测、可干跑的交易规则。
 
-## 📊 Example Visualization
+原分析逻辑（BOS、CHoCH、订单块、FVG、溢价/折价）仍在 `smart_money_concepts/smc.py`。交易规则是新增的，只做黄金顺势回撤，不保证盈利。
 
-![SMC Chart Example](images/smc_chart.png)
-![Analyzing](images/Analyzing.png)
-![Analysis_summary](images/Analysis_summary.png)
----
+## 交易规则
 
-## 🚀 Features  
-✅ **Market Structure Analysis** — Break of Structure (BOS) & Change of Character (CHoCH)  
-✅ **Order Blocks** — Bullish & Bearish institutional zones  
-✅ **Fair Value Gaps (FVG)** — Detection with mitigation logic  
-✅ **Equal Highs & Lows (EQH/EQL)** — Potential reversal points  
-✅ **Premium & Discount Zones** — Dynamic equilibrium mapping  
-✅ **Visualization** — Candlestick charts with SMC overlays  
-✅ **Real-time Data** — Fetches from Yahoo Finance  
-✅ **CLI Support** — Batch run multiple stocks  
+- 品种默认 `XAUUSD`。K 线是 Bid 价，买入按点差计入成本。
+- 方向看 H1 摆动结构，入场看 M15 内部 BOS/CHoCH。两者方向必须一致。
+- 多单只在区间 62% 以下寻找，空单只在 38% 以上寻找。
+- 最近 8 根 K 线必须回踩同向订单块或公允价值缺口，止损放在该区域外侧再加 0.2 ATR。
+- 止损距离限制在 80 到 2500 点。默认 2R 止盈。
+- 单笔风险默认权益的 0.5%。手数按品种 tick value 向下取整，不会为了凑最小手数而放大风险。
+- 只在 K 线时间 09:00–22:00 开仓，周五 21:00 后不再开仓，并在回测里按市价平掉持仓，避开周末跳空。
+- 点差超过 40 点不做。同一 magic `161211` 同时只持有一笔。
 
----
+K 线时间是 MT5 返回的经纪商服务器时间。若服务器不是 UTC+2/+3，用参数调整时段。
 
-## ⚙️ Installation  
+## 安装
 
-From **PyPI**:  
-```bash
-pip install smart-money-concept
+使用已经安装 `MetaTrader5` 的 Windows Python，例如 `D:\Python312\python.exe`。终端需要已经登录并打开。
+
+```powershell
+D:\Python312\python.exe -m pip install -r requirements.txt
 ```
 
-From **Source**:  
-```bash
-git clone https://github.com/Prasad1612/smart-money-concept.git
-cd smart-money-concept
+## 用法
 
-# Install dependencies
-pip install -r requirements.txt
+```powershell
+# 结构分析，图保存到 reports\
+D:\Python312\python.exe -m smart_money_concepts.cli analyze --symbol XAUUSD --timeframe M15 --bars 1500
 
-# Install locally
-pip install .
+# 回测。成交在信号下一根 K 线开盘，同一根同时碰到止损和止盈时按止损处理。
+D:\Python312\python.exe -m smart_money_concepts.cli backtest --symbol XAUUSD --bars 8000 --balance 10000
+
+# 只评估最新已收盘 K 线，不会下单。
+D:\Python312\python.exe -m smart_money_concepts.cli live --symbol XAUUSD
+
+# 真正下单必须同时带上这两个开关。先在模拟账户验证。
+D:\Python312\python.exe -m smart_money_concepts.cli live --symbol XAUUSD --send --confirm-live
 ```
 
----
+`live` 默认是干跑。它只管理 magic 为 161211 的持仓，不会平掉终端里的其他黄金单。
 
-## 🧑‍💻 Usage  
+## 测试
 
-### Python Script Example  
-```python
-import asyncio
-from typing import List, Dict
-from smart_money_concepts import SmartMoneyConcepts
-
-async def main(stock_codes: List[str], period: str = "max", interval: str = "1d", batch_size: int = 10, delay: float = 2.0, visualize: bool = True):
-    if not stock_codes:
-        stock_codes = ["RELIANCE.NS"]  # Default to NSE-listed Reliance
-
-    for i, stock_code in enumerate(stock_codes):
-        print(f"\n==============================")
-        print(f"🔍 Analyzing stock: {stock_code}")
-        print(f"==============================")
-
-        smc = SmartMoneyConcepts(stock_code=stock_code, period=period, interval=interval)
-        
-        # Retry logic for fetching data
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                success = await smc.fetch_ohlcv()
-                if success:
-                    smc.prepare_data()
-                    smc.run_smc_analysis()
-                    if visualize:
-                        smc.visualize_smc(bars_to_show=250)
-                    else:
-                        smc.print_analysis_summary()  # Print summary even if visualization is skipped
-                    break
-                else:
-                    print(f"❌ Analysis failed for {stock_code}!")
-                    break
-            except Exception as e:
-                if "429" in str(e):  # Check for rate limit error
-                    print(f"Rate limit hit for {stock_code}. Retrying ({attempt + 1}/{max_retries}) after delay...")
-                    await asyncio.sleep(5)  # Wait longer for rate limit errors
-                else:
-                    print(f"Error for {stock_code}: {e}")
-                    break
-            if attempt == max_retries - 1:
-                print(f"❌ Failed to fetch data for {stock_code} after {max_retries} attempts.")
-
-        # Add delay after every batch_size stocks
-        if (i + 1) % batch_size == 0 and i + 1 < len(stock_codes):
-            print(f"Pausing for {delay} seconds after processing {batch_size} stocks...")
-            await asyncio.sleep(delay)
-
-if __name__ == "__main__":
-    # Example stock list (use .NS for NSE-listed stocks, .BO for BSE, or others as needed)
-
-    # Stocks
-    stock_codes = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
-    
-    # Index
-    # stock_codes = ["^NSEI"]
-    
-    asyncio.run(main(stock_codes, period="1y", interval="1d", batch_size=10, delay=2.0, visualize=True))
+```powershell
+D:\Python312\python.exe -m unittest tests.test_gold_strategy -v
 ```
 
-### CLI Example  
-```bash
-python -m smart_money_concepts.cli --stocks ^NSEI RELIANCE.NS --period 1y --interval 1d
-```
+## 说明
 
-Options:  
-- `--stocks`: List of stock codes (default: RELIANCE.NS)  
-- `--period`: Data period (default: 1y)  
-- `--interval`: Data interval (default: 1d)  
-- `--batch-size`: Number of stocks before pause (default: 10)  
-- `--delay`: Delay between batches (default: 2.0s)  
-- `--no-visualize`: Only print summary  
-
----
-
-## 📊 Example Output  
-- BOS / CHoCH markers on swing structures  
-- Bullish & Bearish Order Blocks  
-- Fair Value Gaps (highlighted)  
-- Equal Highs & Equal Lows  
-- Premium / Discount zones  
----
-
-## 📂 Project Structure  
-```
-smart-money-concepts/
-├── smart_money_concepts/
-│   ├── __init__.py
-│   ├── smc.py
-│   ├── cli.py
-├── README.md
-├── requirements.txt
-```
-
----
-
-## 🙌 Credits  
-- **[Code Tech (YouTube)](https://www.youtube.com/watch?v=s6YWq-W7V6g)** → This code is Take from YouTube tutorial by Code Tech, which provides a detailed walkthrough of building an SMC indicator in Python
-- **[LuxAlgo](https://www.luxalgo.com/library/indicator/smart-money-concepts-smc/)** → Inspiration from their Smart Money Concepts indicator  
-
----
-
-## ⚠️ Notes  
-- Uses `yfinance`, subject to rate limits (retry logic included).  
-- Requires an active internet connection.  
-- **Disclaimer**: Educational purposes only — not financial advice.  
-
----
-
-## 📬 Contact  
-For questions, open an **Issue** on GitHub.  
-
----
-
-
+这是研究和教育用途的规则实现，不是投资建议。回测没有计入隔夜利息，手续费默认为 0。实盘前请核对品种名、点差、最小手数和账户模式。
