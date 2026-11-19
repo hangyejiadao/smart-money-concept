@@ -52,3 +52,24 @@ D:\Python312\python.exe -m unittest tests.test_gold_strategy -v
 ## 说明
 
 这是研究和教育用途的规则实现，不是投资建议。回测没有计入隔夜利息，手续费默认为 0。实盘前请核对品种名、点差、最小手数和账户模式。
+
+## MQL5 EA
+
+`mql5/Experts/SmartMoneyConceptsEA` 是同一套规则的 MetaTrader 5 专家顾问，结构引擎在 `mql5/Include/SmartMoneyConceptsEA/SMCEngine.mqh`。算法对齐 LuxAlgo Smart Money Concepts（CC BY-NC-SA 4.0，非商用）。
+
+- 默认 `InpAllowLive=false`，实盘会拒绝启动；只在策略测试器里跑。
+- 方向看 H4 摆动趋势，入场看图表周期内部 BOS/CHoCH。
+- 多单只在 62% 以下、空单只在 38% 以上，并要求最近 8 根回踩未缓解 OB/FVG。
+- 单笔风险 0.5%，止盈 2R，同时只持有 1 单。
+
+把源码拷到终端 `MQL5/Experts` 与 `MQL5/Include` 后编译 `SmartMoneyConceptsEA.mq5`。回测品种 `XAUUSD`，H4 偏差，图表周期分别用 H4 / H1 / M30。
+
+回测（XAUUSD，H4 偏差，M1 OHLC，初始资金 10000，杠杆 500，2023.01.01–2026.11.19）：
+
+| 图表周期 | 净利 | 最大净值回撤 | 交易数 | 胜率 | 利润因子 |
+| --- | --- | --- | --- | --- | --- |
+| H4 | -175.46 | 180.70 (1.81%) | 4 | 0.00% | 0.00 |
+| H1 | +203.47 | 397.14 (3.86%) | 36 | 38.89% | 1.20 |
+| M30 | -241.53 | 574.25 (5.68%) | 62 | 32.26% | 0.87 |
+
+这是研究和教育用途的实现，不是投资建议。默认禁止实盘。

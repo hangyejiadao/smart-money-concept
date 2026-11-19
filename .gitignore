@@ -33,3 +33,8 @@ data/
 
 # Local MT5 reports and charts
 reports/
+
+# Compiled MetaTrader binaries
+*.ex5
+*.ex4
+
